@@ -19,7 +19,7 @@ namespace fsblock
             [Option('v', "verbose", HelpText = "Verbose mode")]
             public bool Verbose { get; set; }
 
-            [Option('w', "watch", HelpText = "Continuously watch for changes.  Be sure feedback is enabled.")]
+            [Option('w', "watch", HelpText = "Continuously watch for changes.  If feedback is disabled and no commands are set to run, this will appear to do nothing.")]
             public bool Watch { get; set; }
 
             [Option('f', "nofeedback", HelpText = "Specifies whether or not to print changes to stdout")]
@@ -83,9 +83,9 @@ namespace fsblock
 
             opt.Path = Path.GetFullPath(opt.Path);
 
-            foreach(var v in opt.IgnorePaths)
+            for(int i = 0; i < opt.IgnorePaths.Count; ++i)
             {
-                v = Path.GetFullPath(v);
+                opt.IgnorePaths[i] = Path.GetFullPath(opt.IgnorePaths[i]);
             }
 
             var watch = new FileSystemWatcher();
