@@ -6,12 +6,13 @@ Simple .NET Core command line utility for performing actions on filesystem chang
 Use `dotnet publish -c release -r <platform-name>` to build a self-contained deployment for your platform.  Alternatively, simply build with `dotnet build` and run the resulting binary with `dotnet fsblock.dll`.  Alternatively, use [dotnet-warp](https://www.nuget.org/packages/dotnet-warp/) to build a completely self-contained executable.
 
 ## Usage Examples
+### Basic
 ```bat
 fsblock.exe -p "src" -w -C "rebuild.bat" -F
 ```
 The above usage sample calls `rebuild.bat` (`-C "rebuild.bat"`) any time a file changes within the `src/` folder (`-p "src"`).  It passes the filename as the first argument to the batch file (`-F`).  The `-w` flag causes it to run continuously rather than simply blocking.
 
-
+### Interactive coding in C/C++
 ```bat
 @echo off
 echo Press Ctrl+C to exit.
