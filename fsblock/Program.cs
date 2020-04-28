@@ -1,4 +1,7 @@
 ﻿using System;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.IO;
 using CommandLine;
 using System.Threading;
@@ -38,9 +41,29 @@ namespace fsblock
             public bool NoWaitForCommand { get; set; }
 
             [Option('i', "ignore", Separator = ' ', HelpText = "Set of paths to ignore")]
-            public List<string> IgnorePaths { get; set; } = new List<string>();
+            public IEnumerable<string> _IgnorePaths { get; set; } = new List<string>();
+            
+            private List<string> _iPathInternal;
+            public List<string> IgnorePaths
+            {
+                get
+                {
+                    if (_iPathInternal == null)
+                    {
+                        _iPathInternal = _IgnorePaths.ToList();
+                    }
+                    return _iPathInternal;
+                }
+            }
         }
 
+        class CommandRunOptions
+        {
+            public string Path;
+            public string Args;
+        }
+
+        static CommandRunOptions CommandToRun = null;
         static Options opt = null;
         static int Main(string[] args)
         {
@@ -73,12 +96,60 @@ namespace fsblock
 
             if (opt.Command != null)
             {
-                opt.Command = Path.GetFullPath(opt.Command);
-                if (!File.Exists(opt.Command))
+                CommandToRun = new CommandRunOptions();
+                // If we're passed an actual path...
+                
+                if ((RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && Regex.Match(opt.Command, "[A-Z]\\:\\/").Success) || (opt.Command.StartsWith('/')))
                 {
-                    Console.Error.WriteLine($"Command {opt.Path} does not exist...");
+                    if (opt.Verbose) Console.WriteLine("Command has path");
+                    string exeName = ".exe";
+                    var cmdPath = Path.Combine(Path.GetDirectoryName(opt.Command), Path.GetFileNameWithoutExtension(opt.Command));
+                    if (!File.Exists(cmdPath))
+                    {
+                        cmdPath += exeName;
+                    }
+
+                    if (opt.Verbose) Console.WriteLine(cmdPath);
+                    CommandToRun.Path = cmdPath;
+                    CommandToRun.Args = null;
+                }
+                else
+                {
+                    if (opt.Verbose) Console.WriteLine("Command has no path, searching for file...");
+
+                    var cmdMatch = Regex.Match(opt.Command, "[A-Za-z\\.]+");
+                    if (cmdMatch.Success)
+                    {
+                        var cmdName = cmdMatch.Value;
+                        CommandToRun.Args = opt.Command.Substring(cmdMatch.Value.Length);
+                        if (File.Exists(cmdName))
+                        {
+                            CommandToRun.Path = Path.GetFullPath(cmdName);
+                            if (opt.Verbose) Console.WriteLine("Found locally");
+                        }
+                        else if (PathUtils.ExistsOnPath(cmdName))
+                        {
+                            CommandToRun.Path = PathUtils.GetFullPath(cmdName);
+                            if (opt.Verbose) Console.WriteLine("Found on path");
+                        }
+                        else if (PathUtils.ExistsOnPath(cmdName + ".exe"))
+                        {
+                            CommandToRun.Path = PathUtils.GetFullPath(cmdName + ".exe");
+                            if (opt.Verbose) Console.WriteLine("Found on path (name appended)");
+                        }
+                    }
+                    else
+                    {
+                        if (opt.Verbose) Console.WriteLine("Failed to identify token from command parameter...");
+                    }
+                }
+                
+                if (!File.Exists(CommandToRun.Path))
+                {
+                    Console.Error.WriteLine($"Command {CommandToRun.Path} does not exist...");
                     return 1;
                 }
+                Console.WriteLine($"Will run command {CommandToRun.Path} {CommandToRun.Args}");
             }
 
             opt.Path = Path.GetFullPath(opt.Path);
@@ -174,6 +245,14 @@ namespace fsblock
                     fs = new FileStream(fullPath, mode, access, share);
                     return fs;
                 }
+                catch(UnauthorizedAccessException)
+                {
+                    if (fs != null)
+                    {
+                        fs.Dispose();
+                    }
+                    Thread.Sleep(50);
+                }
                 catch (IOException)
                 {
                     if (fs != null)
@@ -187,64 +266,79 @@ namespace fsblock
             return null;
         }
 
+        static DateTime lastCmdRun;
+        private static object _watchLock = new object();
         private static Dictionary<string, DateTime> m_LastUpdateTimes = new Dictionary<string, DateTime>();
         private static void Watch_Changed(object sender, FileSystemEventArgs change)
         {
-            foreach(var v in opt.IgnorePaths)
+            if (Directory.Exists(change.FullPath)) return;
+            lock(_watchLock)
             {
-                if (Path.Combine(opt.Path, change.Name).Contains(v))
-                    return;
-            }
-
-            if (change.ChangeType == WatcherChangeTypes.Deleted)
-            {
-                m_LastUpdateTimes.Remove(change.FullPath);
-            }
-            else
-            {
-                using (var f = WaitForFile(change.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) { }
-
-                if (m_LastUpdateTimes.ContainsKey(change.FullPath) &&
-                    (DateTime.Now - m_LastUpdateTimes[change.FullPath]).TotalSeconds < 0.1)
+                foreach(var v in opt.IgnorePaths)
                 {
-                    return;
+                    if (Path.Combine(opt.Path, change.Name).Contains(v))
+                        return;
                 }
 
-                m_LastUpdateTimes[change.FullPath] = DateTime.Now;
-            }
-
-            if (opt.Verbose)
-            {
-                Console.WriteLine($"File \"{Path.Combine(opt.Path, change.Name)}\" changed");
-            }
-
-            if (!opt.NoFeedback)
-            {
-                if (change.ChangeType == WatcherChangeTypes.Renamed)
+                if (change.ChangeType == WatcherChangeTypes.Deleted)
                 {
-                    Console.WriteLine($"{change.ChangeType.ToString()}:\"{Path.Combine(opt.Path, change.Name)}\"<-\"{Path.Combine(opt.Path, (change as RenamedEventArgs).OldName)}\"");
+                    m_LastUpdateTimes.Remove(change.FullPath);
                 }
                 else
                 {
-                    Console.WriteLine($"{change.ChangeType.ToString()}:\"{Path.Combine(opt.Path, change.Name)}\"");
-                }
-            }
-
-            if (opt.Command != null)
-            {
-                var info = new ProcessStartInfo();
-                using (var f = WaitForFile(opt.Command, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    info.FileName = opt.Command;
-                    if (opt.ForwardFileName)
+                    if (File.Exists(change.FullPath))
                     {
-                        info.Arguments = change.Name;
+                        using (var f = WaitForFile(change.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) { }
                     }
-                    info.UseShellExecute = true;
 
-                    var proc = Process.Start(info);
-                    if (!opt.NoWaitForCommand)
-                        proc.WaitForExit();
+                    if (m_LastUpdateTimes.ContainsKey(change.FullPath) &&
+                        (DateTime.Now - m_LastUpdateTimes[change.FullPath]).TotalSeconds < 0.1)
+                    {
+                        return;
+                    }
+
+                    m_LastUpdateTimes[change.FullPath] = DateTime.Now;
+                }
+
+                if (opt.Verbose)
+                {
+                    Console.WriteLine($"File \"{Path.Combine(opt.Path, change.Name)}\" changed");
+                }
+
+                if (!opt.NoFeedback)
+                {
+                    if (change.ChangeType == WatcherChangeTypes.Renamed)
+                    {
+                        Console.WriteLine($"{change.ChangeType.ToString()}:\"{Path.Combine(opt.Path, change.Name)}\"<-\"{Path.Combine(opt.Path, (change as RenamedEventArgs).OldName)}\"");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"{change.ChangeType.ToString()}:\"{Path.Combine(opt.Path, change.Name)}\"");
+                    }
+                }
+
+                if (CommandToRun != null && (DateTime.Now - lastCmdRun).TotalSeconds > 0.2)
+                {
+                    var info = new ProcessStartInfo();
+                    using (var f = WaitForFile(CommandToRun.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        info.FileName = CommandToRun.Path;
+                        info.Arguments = CommandToRun.Args ?? "";
+                        
+                        if (opt.ForwardFileName)
+                        {
+                            info.Arguments += change.Name;
+                        }
+                        //info.UseShellExecute = true;
+
+                        var proc = Process.Start(info);
+                        if (!opt.NoWaitForCommand)
+                        {
+                            proc.WaitForExit();
+                        }
+                        m_LastUpdateTimes[change.FullPath] = DateTime.Now;
+                        lastCmdRun = DateTime.Now;
+                    }
                 }
             }
         }
