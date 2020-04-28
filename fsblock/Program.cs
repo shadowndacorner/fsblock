@@ -149,7 +149,9 @@ namespace fsblock
                     Console.Error.WriteLine($"Command {CommandToRun.Path} does not exist...");
                     return 1;
                 }
-                Console.WriteLine($"Will run command {CommandToRun.Path} {CommandToRun.Args}");
+                
+                if (CommandToRun.Args != null) CommandToRun.Args = CommandToRun.Args.Trim();
+                Console.WriteLine($"Will run command {CommandToRun.Path} with arguments \"{CommandToRun.Args}\"");
             }
 
             opt.Path = Path.GetFullPath(opt.Path);
